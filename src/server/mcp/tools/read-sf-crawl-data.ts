@@ -61,7 +61,20 @@ export const readSfCrawlDataTool = {
       const exported = args.exportId
         ? undefined
         : record(await callSfTool("export_crawl", { db_id: args.crawlId }));
-      const exportId = args.exportId ?? exported?.export_id;
+      const exportText =
+        typeof exported?.value === "string" ? exported.value : undefined;
+      const exportId =
+        args.exportId ??
+        (typeof exported?.export_id === "string"
+          ? exported.export_id
+          : exportText?.match(/Export ID:\s*([A-Za-z0-9_-]+)/i)?.[1]);
+      const files = Array.isArray(exported?.files)
+        ? exported.files
+        : exportText
+          ? [...exportText.matchAll(/^\s+(.+?\.csv)\s+\(/gim)].map(
+              (match) => match[1],
+            )
+          : [];
       if (typeof exportId !== "string")
         return reply({
           configured: true,
@@ -72,7 +85,7 @@ export const readSfCrawlDataTool = {
         return reply({
           configured: true,
           exportId,
-          files: exported?.files ?? [],
+          files,
           message: "call again with a file to read rows",
         });
       const upstream = await callSfTool("read_crawl_data", {
