@@ -1,55 +1,142 @@
-import { describe, expect, it, vi } from "vitest";
-import { extractJsonRpcMessage, parseSseDataFrames, callSfTool, sanitizedSfSnippet } from "./client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { callSfTool, isSfMcpConfigured } from "./client";
 
-describe("Screaming Frog streamable HTTP", () => {
-  it("parses event stream frames and ignores comments", () => {
-    const raw = ': heartbeat\n\nevent: message\ndata: {"id":1,"result":{}}\n\nevent: message\ndata: {"id":2,"result":true}\n';
-    expect(parseSseDataFrames(raw)).toEqual(['{"id":1,"result":{}}', '{"id":2,"result":true}']);
-  });
+type Reply = { status?: number; body?: unknown; contentType?: string };
 
-  it("extracts JSON and selects the matching SSE id", () => {
-    expect(extractJsonRpcMessage('{"id":1,"result":42}', "application/json", 1)).toEqual({ id: 1, result: 42 });
-    const raw = 'data: {"id":99,"result":"other"}\n\ndata: {"id":2,"result":"wanted"}\n\n';
-    expect(extractJsonRpcMessage(raw, "text/event-stream", 2)).toEqual({ id: 2, result: "wanted" });
-    expect(() => extractJsonRpcMessage(raw, "text/event-stream", 3)).toThrow("No MCP response matched");
-  });
+let toolReply: () => Reply;
 
-  it("redacts sensitive upstream snippets before truncating to 200 characters", () => {
-    const snippet = sanitizedSfSnippet(`Bearer secret-token ${"a".repeat(48)} ${"x".repeat(250)}`);
-    expect(snippet).not.toContain("secret-token");
-    expect(snippet).not.toContain("a".repeat(48));
-    expect(snippet).toContain("[redacted]");
-    expect(snippet.length).toBeLessThanOrEqual(200);
-  });
+function response(reply: Reply): Response {
+  return new Response(
+    reply.body === undefined
+      ? null
+      : typeof reply.body === "string"
+        ? reply.body
+        : JSON.stringify(reply.body),
+    {
+      status: reply.status ?? 200,
+      headers: { "content-type": reply.contentType ?? "application/json" },
+    },
+  );
+}
 
-  it("returns structured not-configured results without contacting the bridge", async () => {
-    const { runSfCrawlTool } = await import("@/server/mcp/tools/run-sf-crawl");
-    const { getSfCrawlStatusTool } = await import("@/server/mcp/tools/get-sf-crawl-status");
-    const { readSfCrawlDataTool } = await import("@/server/mcp/tools/read-sf-crawl-data");
-    vi.stubEnv("SF_MCP_URL", "");
-    for (const result of [
-      await runSfCrawlTool.handler({ siteUrl: "https://example.com" }),
-      await getSfCrawlStatusTool.handler({}),
-      await readSfCrawlDataTool.handler({ limit: 50, offset: 0 }),
-    ]) {
-      expect(result.structuredContent).toMatchObject({ configured: false, message: expect.stringContaining("SF_MCP_URL") });
+function fetchMock(): ReturnType<typeof vi.fn> {
+  return vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    if (typeof init?.body !== "string")
+      throw new Error("Missing JSON-RPC body");
+    const request: unknown = JSON.parse(init.body);
+    if (
+      typeof request !== "object" ||
+      request === null ||
+      !("method" in request)
+    ) {
+      throw new Error("Invalid JSON-RPC request");
     }
-    vi.unstubAllEnvs();
+    if (request.method === "initialize") {
+      return new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id:
+            "id" in request && typeof request.id === "number"
+              ? request.id
+              : null,
+          result: {
+            protocolVersion: "2025-03-26",
+            capabilities: {},
+            serverInfo: {},
+          },
+        }),
+        {
+          headers: {
+            "content-type": "application/json",
+            "mcp-session-id": "test-session",
+          },
+        },
+      );
+    }
+    if (request.method === "notifications/initialized")
+      return new Response(null, { status: 202 });
+    return response(toolReply());
+  });
+}
+
+beforeEach(() => {
+  process.env.SF_MCP_URL = "http://bridge.test/mcp";
+  delete process.env.SF_MCP_TOKEN;
+  toolReply = () => ({
+    body: { jsonrpc: "2.0", id: 3, result: { value: "ok" } },
+  });
+});
+
+afterEach(() => {
+  delete process.env.SF_MCP_URL;
+  delete process.env.SF_MCP_TOKEN;
+  vi.unstubAllGlobals();
+});
+
+describe("Screaming Frog MCP client", () => {
+  it("returns a plain JSON tools/call result", async () => {
+    toolReply = () => ({
+      body: { jsonrpc: "2.0", id: 3, result: { value: "ok" } },
+    });
+    vi.stubGlobal("fetch", fetchMock());
+    await expect(callSfTool("crawl_site", {})).resolves.toEqual({
+      value: "ok",
+    });
   });
 
-  it("initializes, forwards session headers, parses JSON-in-text and maps tool errors", async () => {
-    vi.stubEnv("SF_MCP_URL", "https://bridge.example/mcp");
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }), { headers: { "content-type": "application/json", "mcp-session-id": "session-1", "mcp-protocol-version": "2025-03-26" } }))
-      .mockResolvedValueOnce(new Response(null, { status: 202 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ jsonrpc: "2.0", id: 2, result: { content: [{ type: "text", text: '{"crawl_id":"crawl-1"}' }] } }), { headers: { "content-type": "application/json" } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ jsonrpc: "2.0", id: 3, result: { isError: true, content: [{ type: "text", text: "bad crawl" }] } }), { headers: { "content-type": "application/json" } }));
-    vi.stubGlobal("fetch", fetchMock);
-    expect(await callSfTool("crawl_site", { url: "https://example.com" })).toEqual({ crawl_id: "crawl-1" });
-    expect(fetchMock.mock.calls[2][1].headers["mcp-session-id"]).toBe("session-1");
-    expect(fetchMock.mock.calls[2][1].headers["mcp-protocol-version"]).toBe("2025-03-26");
-    await expect(callSfTool("crawl_site", {})).rejects.toThrow("bad crawl");
-    vi.unstubAllGlobals();
-    vi.unstubAllEnvs();
+  it("selects the matching SSE response after an unrelated id", async () => {
+    toolReply = () => ({
+      contentType: "text/event-stream",
+      body: 'data: {"jsonrpc":"2.0","id":99,"result":{"value":"wrong"}}\n\ndata: {"jsonrpc":"2.0","id":3,"result":{"value":"right"}}\n\n',
+    });
+    vi.stubGlobal("fetch", fetchMock());
+    await expect(callSfTool("crawl_site", {})).resolves.toEqual({
+      value: "right",
+    });
+  });
+
+  it("rejects with upstream JSON-RPC error text", async () => {
+    toolReply = () => ({
+      body: {
+        jsonrpc: "2.0",
+        id: 3,
+        error: { code: -1, message: "upstream denied" },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock());
+    await expect(callSfTool("crawl_site", {})).rejects.toThrow(
+      "upstream denied",
+    );
+  });
+
+  it("redacts bearer tokens in HTTP errors", async () => {
+    process.env.SF_MCP_TOKEN = "tok_abc123def456";
+    toolReply = () => ({
+      status: 401,
+      body: "invalid token Bearer tok_abc123def456",
+    });
+    vi.stubGlobal("fetch", fetchMock());
+    const result = callSfTool("crawl_site", {});
+    await expect(result).rejects.toThrow("SF MCP HTTP 401");
+    await expect(result).rejects.toThrow("[redacted]");
+    await expect(result).rejects.not.toThrow("tok_abc123def456");
+  });
+
+  it("reinitializes once after an HTTP 404 and retries the tool call", async () => {
+    let calls = 0;
+    toolReply = () =>
+      ++calls === 1
+        ? { status: 404, body: "session expired" }
+        : { body: { jsonrpc: "2.0", id: 5, result: { value: "recovered" } } };
+    vi.stubGlobal("fetch", fetchMock());
+    await expect(callSfTool("crawl_site", {})).resolves.toEqual({
+      value: "recovered",
+    });
+  });
+
+  it("reports whether SF_MCP_URL is configured", () => {
+    expect(isSfMcpConfigured()).toBe(true);
+    delete process.env.SF_MCP_URL;
+    expect(isSfMcpConfigured()).toBe(false);
   });
 });

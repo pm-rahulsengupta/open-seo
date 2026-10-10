@@ -4,6 +4,10 @@ type JsonRpcMessage = {
   error?: { message?: string; code?: number };
 };
 
+function isJsonRpcMessage(value: unknown): value is JsonRpcMessage {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 let sessionId: string | undefined;
 let protocolVersion: string | undefined;
 let requestId = 0;
@@ -12,7 +16,8 @@ let initialization: Promise<void> | undefined;
 let sessionUrl: string | undefined;
 
 export function sanitizedSfSnippet(value: string): string {
-  return value.slice(0, 200)
+  return value
+    .slice(0, 200)
     .replace(/Bearer\s+\S+/gi, "[redacted]")
     .replace(/[A-Za-z0-9+/_=-]{32,}/g, "[redacted]");
 }
@@ -21,7 +26,7 @@ export function isSfMcpConfigured(): boolean {
   return Boolean(process.env.SF_MCP_URL?.trim());
 }
 
-export function parseSseDataFrames(raw: string): string[] {
+function parseSseDataFrames(raw: string): string[] {
   const frames: string[] = [];
   let data: string[] = [];
   for (const line of `${raw}\n`.split(/\r?\n/)) {
@@ -35,23 +40,31 @@ export function parseSseDataFrames(raw: string): string[] {
   return frames;
 }
 
-export function extractJsonRpcMessage(
+function extractJsonRpcMessage(
   rawBody: string,
   contentType: string,
   expectedId: number | null,
 ): JsonRpcMessage {
   if (!contentType.toLowerCase().includes("text/event-stream")) {
-    return JSON.parse(rawBody) as JsonRpcMessage;
+    const message: unknown = JSON.parse(rawBody);
+    if (isJsonRpcMessage(message)) return message;
+    throw new Error("Invalid MCP JSON-RPC response");
   }
   const messages = parseSseDataFrames(rawBody).flatMap((frame) => {
     try {
-      return [JSON.parse(frame) as JsonRpcMessage];
+      const message: unknown = JSON.parse(frame);
+      return isJsonRpcMessage(message) ? [message] : [];
     } catch {
       return [];
     }
   });
-  const matched = expectedId === null ? undefined : messages.find((message) => message.id === expectedId);
-  const fallback = messages.find((message) => "result" in message || "error" in message);
+  const matched =
+    expectedId === null
+      ? undefined
+      : messages.find((message) => message.id === expectedId);
+  const fallback = messages.find(
+    (message) => "result" in message || "error" in message,
+  );
   if (matched) return matched;
   if (messages.some((message) => message.id !== undefined)) {
     throw new Error(`No MCP response matched request ${expectedId}`);
@@ -60,19 +73,27 @@ export function extractJsonRpcMessage(
   throw new Error("No MCP JSON-RPC response found in event stream");
 }
 
-export function resultText(result: unknown): string {
-  if (typeof result !== "object" || result === null || !("content" in result)) return "";
+function resultText(result: unknown): string {
+  if (typeof result !== "object" || result === null || !("content" in result))
+    return "";
   const content = result.content;
   if (!Array.isArray(content)) return "";
-  return content
-    .filter((part): part is { type: "text"; text: string } =>
-      part?.type === "text" && typeof part.text === "string",
+  const parts: unknown[] = content;
+  return parts
+    .filter(
+      (part): part is { type: "text"; text: string } =>
+        typeof part === "object" &&
+        part !== null &&
+        "type" in part &&
+        part.type === "text" &&
+        "text" in part &&
+        typeof part.text === "string",
     )
     .map((part) => part.text)
     .join("\n");
 }
 
-export function parseSfResult(result: unknown): unknown {
+function parseSfResult(result: unknown): unknown {
   const text = resultText(result);
   if (!text) return result;
   try {
@@ -82,14 +103,18 @@ export function parseSfResult(result: unknown): unknown {
   }
 }
 
-async function send(message: Record<string, unknown>, id: number | null): Promise<unknown> {
+async function send(
+  message: Record<string, unknown>,
+  id: number | null,
+): Promise<unknown> {
   const url = process.env.SF_MCP_URL;
   if (!url?.trim()) throw new Error("SF_MCP_URL is not configured");
   const headers: Record<string, string> = {
     "content-type": "application/json",
     accept: "application/json, text/event-stream",
   };
-  if (process.env.SF_MCP_TOKEN) headers.Authorization = `Bearer ${process.env.SF_MCP_TOKEN}`;
+  if (process.env.SF_MCP_TOKEN)
+    headers.Authorization = `Bearer ${process.env.SF_MCP_TOKEN}`;
   if (sessionId) headers["mcp-session-id"] = sessionId;
   if (protocolVersion) headers["mcp-protocol-version"] = protocolVersion;
   const response = await fetch(url, {
@@ -103,30 +128,54 @@ async function send(message: Record<string, unknown>, id: number | null): Promis
   if (newSession) sessionId = newSession;
   if (newVersion) protocolVersion = newVersion;
   const body = await response.text();
-  if (!response.ok) throw new Error(`SF MCP HTTP ${response.status}: ${sanitizedSfSnippet(body)}`);
+  if (!response.ok)
+    throw new Error(
+      `SF MCP HTTP ${response.status}: ${sanitizedSfSnippet(body)}`,
+    );
   if (id === null) return undefined;
-  const rpc = extractJsonRpcMessage(body, response.headers.get("content-type") ?? "", id);
-  if (rpc.error) throw new Error(`SF MCP error ${rpc.error.code ?? ""}: ${rpc.error.message ?? body}`);
+  const rpc = extractJsonRpcMessage(
+    body,
+    response.headers.get("content-type") ?? "",
+    id,
+  );
+  if (rpc.error)
+    throw new Error(
+      `SF MCP error ${rpc.error.code ?? ""}: ${rpc.error.message ?? body}`,
+    );
   if (!("result" in rpc)) throw new Error("SF MCP response has no result");
   return rpc.result;
 }
 
 async function initialize(): Promise<void> {
   const id = ++requestId;
-  await send({ id, method: "initialize", params: {
-    protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "open-seo", version: "1" },
-  } }, id);
+  await send(
+    {
+      id,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: { name: "open-seo", version: "1" },
+      },
+    },
+    id,
+  );
   await send({ method: "notifications/initialized" }, null);
   initialized = true;
 }
 
 async function ensureInitialized(): Promise<void> {
   if (initialized) return;
-  initialization ??= initialize().finally(() => { initialization = undefined; });
+  initialization ??= initialize().finally(() => {
+    initialization = undefined;
+  });
   await initialization;
 }
 
-export async function callSfTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+export async function callSfTool(
+  name: string,
+  args: Record<string, unknown>,
+): Promise<unknown> {
   if (sessionUrl !== undefined && sessionUrl !== process.env.SF_MCP_URL) {
     sessionId = undefined;
     protocolVersion = undefined;
@@ -136,14 +185,32 @@ export async function callSfTool(name: string, args: Record<string, unknown>): P
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       await ensureInitialized();
-      return await send({ id: ++requestId, method: "tools/call", params: { name, arguments: args } }, requestId).then((result) => {
-        if (typeof result === "object" && result !== null && "isError" in result && result.isError) {
-          throw new Error(`SF MCP tool error: ${resultText(result) || JSON.stringify(result)}`);
+      return await send(
+        {
+          id: ++requestId,
+          method: "tools/call",
+          params: { name, arguments: args },
+        },
+        requestId,
+      ).then((result) => {
+        if (
+          typeof result === "object" &&
+          result !== null &&
+          "isError" in result &&
+          result.isError
+        ) {
+          throw new Error(
+            `SF MCP tool error: ${resultText(result) || JSON.stringify(result)}`,
+          );
         }
         return parseSfResult(result);
       });
     } catch (error) {
-      if (attempt === 0 && error instanceof Error && /^SF MCP HTTP 404:/.test(error.message)) {
+      if (
+        attempt === 0 &&
+        error instanceof Error &&
+        error.message.startsWith("SF MCP HTTP 404:")
+      ) {
         sessionId = undefined;
         protocolVersion = undefined;
         initialized = false;
