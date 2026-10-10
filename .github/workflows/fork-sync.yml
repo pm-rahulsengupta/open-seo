@@ -1,0 +1,159 @@
+name: Fork upstream sync
+
+on:
+  schedule:
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "Upstream ref to merge (default: latest v* tag; use main for upstream HEAD)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: fork-sync
+  cancel-in-progress: false
+
+env:
+  BUILD_BRANCH: build/v0.1.12-omniroute
+  UPSTREAM_REPO: https://github.com/every-app/open-seo.git
+
+jobs:
+  sync:
+    if: github.repository == 'pm-rahulsengupta/open-seo'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BUILD_BRANCH }}
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_PAT || github.token }}
+
+      - name: Determine upstream target
+        id: target
+        run: |
+          git remote add upstream "$UPSTREAM_REPO"
+          git fetch upstream --tags --force
+          if [ -n "${{ inputs.source }}" ]; then
+            target="${{ inputs.source }}"
+          else
+            target=$(git tag --list "v*" --sort=-v:refname | head -1)
+          fi
+          git rev-parse --verify -q "$target^{commit}" >/dev/null || {
+            echo "Unknown upstream ref: $target" >&2
+            exit 1
+          }
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor "$target" "$BUILD_BRANCH"; then
+            echo "up_to_date=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "up_to_date=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Report up-to-date
+        if: steps.target.outputs.up_to_date == 'true'
+        run: echo "$BUILD_BRANCH already contains ${{ steps.target.outputs.target }}; nothing to sync."
+
+      - name: Check for open sync PR
+        if: steps.target.outputs.up_to_date == 'false'
+        id: openpr
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT || github.token }}
+        run: |
+          existing=$(gh pr list -R "$GITHUB_REPOSITORY" --base "$BUILD_BRANCH" --state open \
+            --json headRefName --jq '[.[].headRefName | select(startswith("sync/upstream-"))] | length')
+          echo "open=$existing" >> "$GITHUB_OUTPUT"
+          [ "$existing" = "0" ] || echo "A sync PR is already open; merge or close it first."
+
+      - name: Merge upstream into sync branch
+        if: steps.target.outputs.up_to_date == 'false' && steps.openpr.outputs.open == '0'
+        id: merge
+        run: |
+          target="${{ steps.target.outputs.target }}"
+          branch="sync/upstream-${target//\//-}"
+          git config user.name "fork-sync-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git checkout -b "$branch"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          if ! git merge --no-edit "$target"; then
+            {
+              echo "conflicts<<EOF"
+              git diff --name-only --diff-filter=U
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            git merge --abort
+            echo "merge_failed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open conflict issue
+        if: steps.merge.outputs.merge_failed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT || github.token }}
+        run: |
+          title="Upstream sync needs manual merge (${{ steps.target.outputs.target }})"
+          issue=$(gh issue list -R "$GITHUB_REPOSITORY" --state open --search "$title" in:title --json number --jq 'length')
+          if [ "$issue" = "0" ]; then
+            gh issue create -R "$GITHUB_REPOSITORY" -t "$title" -b "Merging ${{ steps.target.outputs.target }} into $BUILD_BRANCH conflicted in:
+          ${{ steps.merge.outputs.conflicts }}
+
+          Resolve locally:
+          \`\`\`
+          git fetch origin && git checkout -b ${{ steps.merge.outputs.branch }} origin/${{ steps.merge.outputs.branch }} || git checkout -b ${{ steps.merge.outputs.branch }} origin/$BUILD_BRANCH
+          git merge ${{ steps.target.outputs.target }}
+          # resolve, commit, push, open PR
+          \`\`\`"
+          fi
+          exit 1
+
+      - name: Push branch and open PR
+        if: steps.target.outputs.up_to_date == 'false' && steps.openpr.outputs.open == '0' && steps.merge.outputs.merge_failed != 'true'
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT || github.token }}
+        run: |
+          git push origin "${{ steps.merge.outputs.branch }}"
+          summary=$(git log --oneline "$BUILD_BRANCH..${{ steps.target.outputs.target }}" | head -50)
+          url=$(gh pr create -R "$GITHUB_REPOSITORY" --base "$BUILD_BRANCH" \
+            --head "${{ steps.merge.outputs.branch }}" \
+            -t "sync: upstream ${{ steps.target.outputs.target }}" \
+            -b "Automated merge of upstream \`${{ steps.target.outputs.target }}\` into \`$BUILD_BRANCH\`.
+
+          Upstream changes:
+          \`\`\`
+          $summary
+          \`\`\`
+
+          Merging rebuilds the \`omniroute\` image via fork-image.yml.")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "number=${url##*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Auto-merge when CI is green (requires SYNC_PAT)
+        if: steps.pr.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT || github.token }}
+          HAS_PAT: ${{ secrets.SYNC_PAT != '' }}
+        run: |
+          number="${{ steps.pr.outputs.number }}"
+          if [ "$HAS_PAT" != "true" ]; then
+            gh pr comment "$number" -R "$GITHUB_REPOSITORY" -b "SYNC_PAT is not configured: merge this PR manually to rebuild the image."
+            exit 0
+          fi
+          for i in $(seq 1 60); do
+            total=$(gh pr view "$number" -R "$GITHUB_REPOSITORY" --json statusCheckRollup --jq '.statusCheckRollup | length')
+            pending=$(gh pr view "$number" -R "$GITHUB_REPOSITORY" --json statusCheckRollup --jq '[.statusCheckRollup[]? | select(.status != "COMPLETED")] | length')
+            if [ "$total" -gt 0 ] && [ "$pending" = "0" ]; then break; fi
+            sleep 30
+          done
+          failed=$(gh pr view "$number" -R "$GITHUB_REPOSITORY" --json statusCheckRollup --jq '[.statusCheckRollup[]? | select(.conclusion == "FAILURE")] | length')
+          if [ "$failed" = "0" ]; then
+            gh pr merge "$number" -R "$GITHUB_REPOSITORY" --merge --delete-branch
+          else
+            gh pr comment "$number" -R "$GITHUB_REPOSITORY" -b "CI failed on this sync; needs manual review."
+            exit 1
+          fi
