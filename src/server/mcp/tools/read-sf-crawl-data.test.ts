@@ -97,7 +97,7 @@ describe("read_sf_crawl_data", () => {
           content: [
             {
               type: "text",
-              text: "Export completed. 9 CSV files generated.\nExport ID: export-7a953408\nFiles:\n  2026.10.11.02.51.50\\\\internal_all.csv (4.5 KB)",
+              text: "Export completed. 9 CSV files generated.\nExport ID: export-7a953408\nFiles:\n  2026.10.11.02.51.50\\internal_all.csv (4.5 KB)",
             },
           ],
         },
@@ -112,7 +112,7 @@ describe("read_sf_crawl_data", () => {
     expect(result.structuredContent).toMatchObject({
       configured: true,
       exportId: "export-7a953408",
-      files: ["2026.10.11.02.51.50\\\\internal_all.csv"],
+      files: ["2026.10.11.02.51.50\\internal_all.csv"],
     });
   });
 
