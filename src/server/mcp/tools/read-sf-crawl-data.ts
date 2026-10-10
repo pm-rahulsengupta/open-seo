@@ -71,7 +71,7 @@ export const readSfCrawlDataTool = {
       const files = Array.isArray(exported?.files)
         ? exported.files
         : exportText
-          ? [...exportText.matchAll(/^\s+(.+?\.csv)\s+\(/gim)].map(
+          ? [...exportText.matchAll(/^\s+([^\r\n]+?\.csv)\s+\(/gim)].map(
               (match) => match[1],
             )
           : [];
