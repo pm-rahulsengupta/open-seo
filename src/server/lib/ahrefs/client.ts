@@ -13,9 +13,7 @@ export function isAhrefsConfigured(): boolean {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return (
-    typeof value === "object" && value !== null && !Array.isArray(value)
-  );
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -47,8 +45,16 @@ export async function getFreeDomainRating(hostname: string): Promise<Rating> {
   const headers = { Authorization: `Bearer ${key}` };
   try {
     let response = await fetch(url, { headers });
-    if (response.status === 400 && (await response.text()).toLowerCase().includes("date")) {
-      url.searchParams.set("date", new Date(Date.now() - 9 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10));
+    if (
+      response.status === 400 &&
+      (await response.text()).toLowerCase().includes("date")
+    ) {
+      url.searchParams.set(
+        "date",
+        new Date(Date.now() - 9 * 24 * 60 * 60 * 1000)
+          .toISOString()
+          .slice(0, 10),
+      );
       response = await fetch(url, { headers });
     }
     if (!response.ok) return emptyRating;

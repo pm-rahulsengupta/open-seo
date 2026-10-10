@@ -24,6 +24,9 @@ import { getBacklinksOverviewTool } from "@/server/mcp/tools/get-backlinks-overv
 import { getBacklinksProfileTool } from "@/server/mcp/tools/get-backlinks-profile";
 import { getDomainKeywordSuggestionsTool } from "@/server/mcp/tools/get-domain-keyword-suggestions";
 import { getDomainOverviewTool } from "@/server/mcp/tools/get-domain-overview";
+import { runSfCrawlTool } from "@/server/mcp/tools/run-sf-crawl";
+import { getSfCrawlStatusTool } from "@/server/mcp/tools/get-sf-crawl-status";
+import { readSfCrawlDataTool } from "@/server/mcp/tools/read-sf-crawl-data";
 import { addRankTrackingKeywordsTool } from "@/server/mcp/tools/add-rank-tracking-keywords";
 import { createRankTrackerTool } from "@/server/mcp/tools/create-rank-tracker";
 import { estimateRankTrackerCostTool } from "@/server/mcp/tools/estimate-rank-tracker-cost";
@@ -386,6 +389,9 @@ export function buildSamMcpTools(
     research_keywords: adaptTool(researchKeywordsTool),
     save_keywords: adaptTool(saveKeywordsTool),
     get_domain_overview: adaptTool(getDomainOverviewTool),
+    run_sf_crawl: adaptTool(runSfCrawlTool),
+    get_sf_crawl_status: adaptTool(getSfCrawlStatusTool),
+    read_sf_crawl_data: adaptTool(readSfCrawlDataTool),
     get_domain_keyword_suggestions: adaptTool(getDomainKeywordSuggestionsTool),
     get_backlinks_overview: adaptTool(getBacklinksOverviewTool),
     get_backlinks_profile: adaptTool(getBacklinksProfileTool),

@@ -4,7 +4,10 @@ import { z } from "zod";
 import type { BillingCustomerContext } from "@/server/billing/subscription";
 import type { CreditFeature } from "@/shared/billing-credit-features";
 import { createDataforseoClient } from "@/server/lib/dataforseo";
-import { getFreeDomainRating, isAhrefsConfigured } from "@/server/lib/ahrefs/client";
+import {
+  getFreeDomainRating,
+  isAhrefsConfigured,
+} from "@/server/lib/ahrefs/client";
 import { buildRankedKeywordsScopeFilter } from "@/server/lib/dataforseo/researchScopeFilters";
 import { joinClauses } from "@/server/lib/dataforseo/filters";
 import { parseResearchTargetOrThrow } from "@/server/lib/domainUtils";

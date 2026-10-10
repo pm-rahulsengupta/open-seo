@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const workers = vi.hoisted(() => ({ env: {} as Record<string, string | undefined> }));
+const workers = vi.hoisted(() => ({
+  env: {} as Record<string, string | undefined>,
+}));
 vi.mock("cloudflare:workers", () => ({ env: workers.env }));
 
 import { getFreeDomainRating } from "./client";
@@ -56,7 +58,9 @@ describe("getFreeDomainRating", () => {
   it("retries with a date param when the API demands one", async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ message: "date is required" }, 400))
-      .mockResolvedValueOnce(jsonResponse({ domain_rating: { domain_rating: 44 } }));
+      .mockResolvedValueOnce(
+        jsonResponse({ domain_rating: { domain_rating: 44 } }),
+      );
     await expect(getFreeDomainRating("example.com")).resolves.toEqual({
       domainRating: 44,
     });

@@ -665,10 +665,12 @@ export function DomainOverviewPage({
                         ),
                       },
                       ...(state.overview.ahrefsDomainRating != null
-                        ? [{
-                            label: "Ahrefs DR",
-                            value: state.overview.ahrefsDomainRating,
-                          }]
+                        ? [
+                            {
+                              label: "Ahrefs DR",
+                              value: state.overview.ahrefsDomainRating,
+                            },
+                          ]
                         : []),
                     ]}
                   />

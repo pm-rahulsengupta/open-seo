@@ -14,7 +14,14 @@ type PreflightLevel = "ok" | "info" | "warn" | "fail";
 
 type PreflightItem = {
   // Stable identifier shared with /api/health's check map.
-  key: "auth" | "dataforseo" | "gsc" | "ai" | "ahrefs" | "rendering" | "runtime";
+  key:
+    | "auth"
+    | "dataforseo"
+    | "gsc"
+    | "ai"
+    | "ahrefs"
+    | "rendering"
+    | "runtime";
   name: string;
   level: PreflightLevel;
   message: string;
@@ -202,7 +209,7 @@ function checkOptionalFeatures(env: EnvRecord, items: PreflightItem[]): void {
           name: "AI features",
           level: "ok",
           message: get(env, "OPENROUTER_BASE_URL")
-            ? "OPENROUTER_API_KEY set — routing via OPENROUTER_BASE_URL"
+            ? "OPENROUTER_API_KEY set ï¿½ routing via OPENROUTER_BASE_URL"
             : "OPENROUTER_API_KEY set",
         }
       : {
