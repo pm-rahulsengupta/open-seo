@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   callSfTool,
+  extractSfCrawlId,
   isSfMcpConfigured,
   sanitizedSfSnippet,
 } from "@/server/lib/screaming-frog/client";
@@ -14,12 +15,6 @@ const notConfigured = {
 
 function reply(data: Record<string, unknown>) {
   return mcpResponse({ text: JSON.stringify(data), structuredContent: data });
-}
-
-function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? Object.fromEntries(Object.entries(value))
-    : { value };
 }
 
 const inputSchema = {
@@ -45,9 +40,8 @@ export const runSfCrawlTool = {
         url: args.siteUrl,
         ...(args.label ? { label: args.label } : {}),
       });
-      const data = record(upstream);
-      const crawlId = data.crawl_id ?? data.id ?? data.db_id ?? data.crawlId;
-      if (crawlId === undefined || crawlId === null || crawlId === "") {
+      const crawlId = extractSfCrawlId(upstream);
+      if (!crawlId) {
         return reply({
           configured: true,
           started: false,

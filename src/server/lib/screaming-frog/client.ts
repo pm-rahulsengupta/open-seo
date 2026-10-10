@@ -22,6 +22,29 @@ export function sanitizedSfSnippet(value: string): string {
     .replace(/[A-Za-z0-9+/_=-]{32,}/g, "[redacted]");
 }
 
+export function extractSfCrawlId(upstream: unknown): string | undefined {
+  const data: Record<string, unknown> | undefined =
+    typeof upstream === "object" &&
+    upstream !== null &&
+    !Array.isArray(upstream)
+      ? Object.fromEntries(Object.entries(upstream))
+      : undefined;
+  if (data) {
+    for (const key of ["crawl_id", "id", "db_id", "crawlId"]) {
+      const value = data[key];
+      if (typeof value === "string" && value) return value;
+      if (typeof value === "number") return String(value);
+    }
+  }
+  const text =
+    typeof upstream === "string"
+      ? upstream
+      : typeof data?.value === "string"
+        ? data.value
+        : undefined;
+  return text?.match(/Crawl ID:\s*([A-Za-z0-9_-]+)/i)?.[1];
+}
+
 export function isSfMcpConfigured(): boolean {
   return Boolean(process.env.SF_MCP_URL?.trim());
 }
